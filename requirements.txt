@@ -1,0 +1,18 @@
+# =========================
+# System / Utils
+# =========================
+runpod
+pdf2image
+pillow
+numpy
+huggingface_hub
+
+# =========================
+# LLM Inference Engine
+# =========================
+# vLLM is pre-installed in the vllm/vllm-openai:gemma4 base image
+
+# =========================
+# Gemma 4 requirement
+# =========================
+transformers==5.5.0
