@@ -3,11 +3,11 @@ import json
 import base64
 import re
 import os
+import torch
 from datetime import datetime
 from pdf2image import convert_from_bytes
 from PIL import Image
-from vllm import LLM, SamplingParams
-from transformers import AutoProcessor
+from transformers import AutoProcessor, AutoModelForVision2Seq
 
 def log(msg):
     print(f"[LOG] {msg}", flush=True)
@@ -16,31 +16,21 @@ def log(msg):
 # CONFIG & MODEL LOADING
 # ===============================
 MODEL_PATH = "/models/gemma4"
-MAX_PAGES_PER_BATCH = 4  # Number of pages to process in a single vLLM prompt (multi-image)
+MAX_PAGES_PER_BATCH = 4  # Number of pages to process in a single prompt (multi-image)
 
-log("Loading Gemma-4-26B-A4B-it with vLLM...")
+log("Loading Gemma-4-26B-A4B-it with Transformers...")
 
-# Load processor for chat template formatting
 processor = AutoProcessor.from_pretrained(MODEL_PATH)
 
 try:
-    llm = LLM(
-        model=MODEL_PATH,
+    model = AutoModelForVision2Seq.from_pretrained(
+        MODEL_PATH,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
         trust_remote_code=True,
-        dtype="auto",
-        max_model_len=8192,
-        gpu_memory_utilization=0.90,
-        limit_mm_per_prompt={"image": MAX_PAGES_PER_BATCH},
-        tensor_parallel_size=int(os.environ.get("TENSOR_PARALLEL_SIZE", "1")),
-        # Gemma 4 dynamic vision: allocate max capacity for high-detail OCR
-        hf_overrides={
-            "vision_config": {"default_output_length": 1120},
-            "vision_soft_tokens_per_image": 1120,
-        },
-        # Default token budget per image (max detail for OCR)
-        mm_processor_kwargs={"max_soft_tokens": 1120},
     )
-    log("Gemma-4-26B-A4B-it loaded successfully with vLLM.")
+    model.eval()
+    log("Gemma-4-26B-A4B-it loaded successfully with Transformers.")
 except Exception as e:
     log(f"CRITICAL ERROR loading model: {str(e)}")
     raise e
@@ -116,18 +106,11 @@ def repair_truncated_json(text):
     return None
 
 
-def process_pages_vllm(images):
+def process_pages(images):
     """
-    Process multiple pages using Gemma 4's native multi-image support.
-    All pages in the batch are sent as a single prompt with multiple images,
-    giving the model full cross-page context.
+    Process multiple pages using Gemma 4's native multi-image support
+    with Hugging Face Transformers.
     """
-    sampling_params = SamplingParams(
-        max_tokens=4096,
-        temperature=0.0,
-        top_p=1.0,
-    )
-
     # Resize images for consistency
     processed_images = []
     for img in images:
@@ -135,42 +118,43 @@ def process_pages_vllm(images):
             img.thumbnail((2000, 2000))
         processed_images.append(img)
 
-    # Build multi-image prompt: one prompt with ALL page images
+    # Build multi-image prompt
     content = []
     for idx, img in enumerate(processed_images):
-        content.append({"type": "image"})
+        content.append({"type": "image", "image": img})
     content.append({"type": "text", "text": SYSTEM_PROMPT})
 
     messages = [
         {"role": "user", "content": content}
     ]
 
-    # Use processor to apply Gemma 4 chat template
-    prompt = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-
     try:
-        # Gemma 4 uses llm.generate() with multi_modal_data
-        if len(processed_images) == 1:
-            mm_data = {"image": processed_images[0]}
-        else:
-            mm_data = {"image": processed_images}
+        # Apply chat template and process inputs
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+            add_generation_prompt=True,
+        ).to(model.device)
 
-        outputs = llm.generate(
-            {
-                "prompt": prompt,
-                "multi_modal_data": mm_data,
-                "mm_processor_kwargs": {"max_soft_tokens": 1120},
-            },
-            sampling_params=sampling_params,
-        )
+        # Generate
+        with torch.inference_mode():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=4096,
+                do_sample=False,
+            )
 
-        text = outputs[0].outputs[0].text
+        # Decode only the generated tokens (skip the input)
+        input_len = inputs["input_ids"].shape[-1]
+        generated_ids = output_ids[:, input_len:]
+        text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
         return [text]  # Single combined output for all pages
 
     except Exception as e:
-        log(f"vLLM batch processing error: {e}")
+        log(f"Inference error: {e}")
         return [json.dumps({"error": f"Batch failed: {str(e)}"})]
 
 
@@ -237,8 +221,8 @@ def process_pdf(pdf_bytes):
         total_batches = (len(images) + MAX_PAGES_PER_BATCH - 1) // MAX_PAGES_PER_BATCH
         log(f"Processing batch {batch_num}/{total_batches} ({len(batch)} pages as multi-image prompt)...")
         
-        # Gemma 4 processes all pages in the batch as a single multi-image prompt
-        raw_outputs = process_pages_vllm(batch)
+        # Process all pages in the batch as a single multi-image prompt
+        raw_outputs = process_pages(batch)
         
         # Parse the combined output
         for j, raw_output in enumerate(raw_outputs):
