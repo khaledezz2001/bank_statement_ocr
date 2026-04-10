@@ -7,7 +7,7 @@ import torch
 from datetime import datetime
 from pdf2image import convert_from_bytes
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForVision2Seq
+from transformers import AutoProcessor, AutoModelForImageTextToText
 
 def log(msg):
     print(f"[LOG] {msg}", flush=True)
@@ -23,7 +23,7 @@ log("Loading Gemma-4-26B-A4B-it with Transformers...")
 processor = AutoProcessor.from_pretrained(MODEL_PATH)
 
 try:
-    model = AutoModelForVision2Seq.from_pretrained(
+    model = AutoModelForImageTextToText.from_pretrained(
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
         device_map="auto",
