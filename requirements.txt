@@ -8,11 +8,13 @@ numpy
 huggingface_hub
 
 # =========================
-# LLM Inference Engine
+# PyTorch (CUDA 12.8)
 # =========================
-# vLLM is pre-installed in the vllm/vllm-openai:gemma4 base image
+torch
+torchvision
 
 # =========================
-# Gemma 4 requirement
+# Gemma 4 - Transformers
 # =========================
 transformers==5.5.0
+accelerate
