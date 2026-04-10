@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/pytorch:26.03-py3
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
