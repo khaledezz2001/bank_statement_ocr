@@ -8,13 +8,8 @@ numpy
 huggingface_hub
 
 # =========================
-# PyTorch (CUDA 12.8)
-# =========================
-torch
-torchvision
-
-# =========================
 # Gemma 4 - Transformers
 # =========================
+# torch & torchvision are pre-installed in the NGC base image
 transformers==5.5.0
 accelerate
