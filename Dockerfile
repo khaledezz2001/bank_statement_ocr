@@ -1,4 +1,4 @@
-FROM vllm/vllm-openai:gemma4
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -6,8 +6,11 @@ ENV HF_HOME=/models
 ENV TRANSFORMERS_CACHE=/models
 ENV HF_HUB_ENABLE_HF_TRANSFER=0
 
-# System deps for PDFs
+# System deps
 RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-dev \
     poppler-utils \
     libgl1 \
     git \
@@ -15,7 +18,8 @@ RUN apt-get update && apt-get install -y \
 
 # Python deps
 COPY requirements.txt /requirements.txt
-RUN pip install --upgrade pip && pip install --no-cache-dir -r /requirements.txt
+RUN pip install --break-system-packages --upgrade pip && \
+    pip install --break-system-packages --no-cache-dir -r /requirements.txt
 
 # ===============================
 # DOWNLOAD Gemma-4-26B-A4B-it
