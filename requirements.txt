@@ -10,9 +10,5 @@ huggingface_hub
 # =========================
 # Gemma 4 - Transformers
 # =========================
-# Upgrade torch for Gemma 4 compatibility (base image has 2.4.0)
---extra-index-url https://download.pytorch.org/whl/cu124
-torch>=2.6.0
-torchvision
 transformers==5.5.0
 accelerate
