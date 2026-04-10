@@ -303,24 +303,43 @@ def process_pdf(pdf_bytes):
 def handler(event):
     log(f"Received event: {event.keys()}")
     if "input" not in event:
+        log("ERROR: No 'input' key in event")
         return {"error": "No input provided"}
         
     job_input = event["input"]
+    log(f"Input keys: {job_input.keys() if isinstance(job_input, dict) else type(job_input)}")
     
     if "pdf_base64" not in job_input:
+        log("ERROR: Missing 'pdf_base64' in input")
         return {"error": "Missing pdf_base64 field"}
 
     pdf_b64 = job_input["pdf_base64"]
+    log(f"Received pdf_base64 of length: {len(pdf_b64)}")
     
     try:
         pdf_bytes = base64.b64decode(pdf_b64)
+        log(f"Decoded PDF: {len(pdf_bytes)} bytes")
     except Exception as e:
+        log(f"ERROR: Invalid base64: {str(e)}")
         return {"error": f"Invalid base64: {str(e)}"}
 
     # Run Inference
-    final_data = process_pdf(pdf_bytes)
-
-    return final_data
+    try:
+        final_data = process_pdf(pdf_bytes)
+        log(f"Processing complete. Transactions found: {len(final_data) if isinstance(final_data, list) else 'N/A'}")
+        return final_data
+    except Exception as e:
+        log(f"ERROR during process_pdf: {str(e)}")
+        import traceback
+        log(f"Traceback: {traceback.format_exc()}")
+        return {"error": f"Processing failed: {str(e)}"}
 
 if __name__ == "__main__":
+    # Log GPU status at startup
+    log(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        log(f"GPU: {torch.cuda.get_device_name(0)}")
+        log(f"GPU memory: {torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB")
+    else:
+        log("WARNING: CUDA is NOT available! Model will run on CPU (very slow).")
     runpod.serverless.start({"handler": handler})
