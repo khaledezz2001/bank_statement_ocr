@@ -10,16 +10,19 @@ ENV HF_HUB_ENABLE_HF_TRANSFER=0
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
+    python3-venv \
     python3-dev \
     poppler-utils \
     libgl1 \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# Python deps — install PyTorch with CUDA 12.8 index
 COPY requirements.txt /requirements.txt
-RUN pip install --break-system-packages --upgrade pip && \
-    pip install --break-system-packages --no-cache-dir -r /requirements.txt
+RUN python3 -m pip install --break-system-packages --upgrade pip && \
+    python3 -m pip install --break-system-packages --no-cache-dir \
+    --extra-index-url https://download.pytorch.org/whl/cu128 \
+    -r /requirements.txt
 
 # ===============================
 # DOWNLOAD Gemma-4-26B-A4B-it
