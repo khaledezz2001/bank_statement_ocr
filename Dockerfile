@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.1-devel-ubuntu24.04
+FROM nvcr.io/nvidia/pytorch:26.03-py3
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -6,23 +6,15 @@ ENV HF_HOME=/models
 ENV TRANSFORMERS_CACHE=/models
 ENV HF_HUB_ENABLE_HF_TRANSFER=0
 
-# System deps
+# System deps for PDFs
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
-    python3-dev \
     poppler-utils \
     libgl1 \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps — install PyTorch with CUDA 12.8 index
+# Python deps (torch is already pre-installed in the NGC image)
 COPY requirements.txt /requirements.txt
-RUN python3 -m pip install --break-system-packages --upgrade pip && \
-    python3 -m pip install --break-system-packages --no-cache-dir \
-    --extra-index-url https://download.pytorch.org/whl/cu128 \
-    -r /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt
 
 # ===============================
 # DOWNLOAD Gemma-4-26B-A4B-it
