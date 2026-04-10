@@ -38,4 +38,5 @@ EOF
 WORKDIR /app
 COPY handler.py /app/handler.py
 
-CMD ["python3", "-u", "handler.py"]
+ENTRYPOINT ["python3"]
+CMD ["-u", "handler.py"]
