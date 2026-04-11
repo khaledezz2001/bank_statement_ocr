@@ -1,4 +1,4 @@
-FROM vllm/vllm-openai:latest
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -12,31 +12,30 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps (vLLM already provides torch + CUDA)
+# Python deps (torch 2.8.0 + CUDA 12.8.1 already in base image)
 COPY requirements.txt /requirements.txt
-RUN pip install --no-cache-dir runpod pdf2image pillow numpy openai
+RUN pip install --no-cache-dir -r /requirements.txt
 
 # ===============================
-# DOWNLOAD Llama-4-Scout-17B-16E-Instruct
+# DOWNLOAD Gemma-4-26B-A4B-it
 # ===============================
 RUN python3 -u <<'EOF'
 from huggingface_hub import snapshot_download
 
-print("Downloading meta-llama/Llama-4-Scout-17B-16E-Instruct...", flush=True)
+print("Downloading google/gemma-4-26B-A4B-it...", flush=True)
 
 snapshot_download(
-    repo_id="meta-llama/Llama-4-Scout-17B-16E-Instruct",
-    local_dir="/models/llama4-scout",
+    repo_id="google/gemma-4-26B-A4B-it",
+    local_dir="/models/gemma4",
     local_dir_use_symlinks=False,
     resume_download=True
 )
 
-print("Llama-4-Scout-17B-16E-Instruct download complete", flush=True)
+print("Gemma-4-26B-A4B-it download complete", flush=True)
 EOF
 
 WORKDIR /app
 COPY handler.py /app/handler.py
-COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
 
-ENTRYPOINT ["/app/start.sh"]
+ENTRYPOINT ["python3"]
+CMD ["-u", "handler.py"]
