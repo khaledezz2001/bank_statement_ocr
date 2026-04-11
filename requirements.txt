@@ -8,7 +8,7 @@ numpy
 huggingface_hub
 
 # =========================
-# Llama 4 Scout - vLLM
+# Gemma 4 - Transformers
 # =========================
-vllm
-openai
+transformers==5.5.0
+accelerate
