@@ -8,7 +8,7 @@ numpy
 huggingface_hub
 
 # =========================
-# Qwen3-VL - vLLM
+# Gemma 4 - Transformers
 # =========================
-vllm
-qwen-vl-utils
+transformers==5.5.0
+accelerate
