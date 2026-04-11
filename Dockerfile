@@ -17,21 +17,21 @@ COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
 # ===============================
-# DOWNLOAD Qwen3-VL-30B-A3B-Instruct
+# DOWNLOAD Gemma-4-26B-A4B-it
 # ===============================
 RUN python3 -u <<'EOF'
 from huggingface_hub import snapshot_download
 
-print("Downloading Qwen/Qwen3-VL-30B-A3B-Instruct...", flush=True)
+print("Downloading google/gemma-4-26B-A4B-it...", flush=True)
 
 snapshot_download(
-    repo_id="Qwen/Qwen3-VL-30B-A3B-Instruct",
-    local_dir="/models/qwen3-vl",
+    repo_id="google/gemma-4-26B-A4B-it",
+    local_dir="/models/gemma4",
     local_dir_use_symlinks=False,
     resume_download=True
 )
 
-print("Qwen3-VL-30B-A3B-Instruct download complete", flush=True)
+print("Gemma-4-26B-A4B-it download complete", flush=True)
 EOF
 
 WORKDIR /app
