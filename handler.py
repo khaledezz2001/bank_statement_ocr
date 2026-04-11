@@ -2,40 +2,38 @@ import runpod
 import json
 import base64
 import re
-import io
 import os
 import torch
+from datetime import datetime
 from pdf2image import convert_from_bytes
 from PIL import Image
-from vllm import LLM, SamplingParams
+from transformers import AutoProcessor, AutoModelForImageTextToText
 
 def log(msg):
     print(f"[LOG] {msg}", flush=True)
 
 # ===============================
-# CONFIG & MODEL LOADING (vLLM)
+# CONFIG & MODEL LOADING
 # ===============================
-MODEL_PATH = "/models/qwen3-vl"
-MAX_PAGES_PER_BATCH = 5  # Qwen3-VL supports multi-image natively
+MODEL_PATH = "/models/gemma4"
+MAX_PAGES_PER_BATCH = 4  # Number of pages to process in a single prompt (multi-image)
 
-log("Loading Qwen3-VL-30B-A3B-Instruct with vLLM (bfloat16)...")
+log("Loading Gemma-4-26B-A4B-it with Transformers...")
 
-llm = LLM(
-    model=MODEL_PATH,
-    dtype="bfloat16",
-    max_model_len=16384,
-    max_num_seqs=2,
-    gpu_memory_utilization=0.90,
-    trust_remote_code=True,
-    limit_mm_per_prompt={"image": MAX_PAGES_PER_BATCH},
-)
+processor = AutoProcessor.from_pretrained(MODEL_PATH)
 
-sampling_params = SamplingParams(
-    max_tokens=4096,
-    temperature=0,
-)
-
-log("Qwen3-VL-30B-A3B-Instruct loaded successfully with vLLM.")
+try:
+    model = AutoModelForImageTextToText.from_pretrained(
+        MODEL_PATH,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    model.eval()
+    log("Gemma-4-26B-A4B-it loaded successfully with Transformers.")
+except Exception as e:
+    log(f"CRITICAL ERROR loading model: {str(e)}")
+    raise e
 
 # ===============================
 # PROMPT
@@ -84,7 +82,6 @@ Rules:
 8. Output ONLY these 6 fields per transaction: date, description, debit, credit, balance, currency. Do NOT include any other fields.
 """
 
-
 def repair_truncated_json(text):
     """Attempt to repair truncated JSON arrays by finding the last complete object."""
     start = text.find('[')
@@ -109,18 +106,10 @@ def repair_truncated_json(text):
     return None
 
 
-def pil_to_data_uri(image):
-    """Convert PIL Image to a base64 data URI for vLLM."""
-    buffered = io.BytesIO()
-    image.save(buffered, format="PNG")
-    b64 = base64.b64encode(buffered.getvalue()).decode()
-    return f"data:image/png;base64,{b64}"
-
-
 def process_pages(images):
     """
-    Process multiple pages in a single prompt using Qwen3-VL's
-    native multi-image support via vLLM.
+    Process multiple pages using Gemma 4's native multi-image support
+    with Hugging Face Transformers.
     """
     # Resize images for consistency
     processed_images = []
@@ -129,18 +118,39 @@ def process_pages(images):
             img.thumbnail((2000, 2000))
         processed_images.append(img)
 
-    # Build multi-image chat message
+    # Build multi-image prompt
     content = []
-    for img in processed_images:
-        image_uri = pil_to_data_uri(img)
-        content.append({"type": "image_url", "image_url": {"url": image_uri}})
+    for idx, img in enumerate(processed_images):
+        content.append({"type": "image", "image": img})
     content.append({"type": "text", "text": SYSTEM_PROMPT})
 
-    messages = [{"role": "user", "content": content}]
+    messages = [
+        {"role": "user", "content": content}
+    ]
 
     try:
-        outputs = llm.chat(messages, sampling_params=sampling_params)
-        text = outputs[0].outputs[0].text
+        # Apply chat template and process inputs
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+            add_generation_prompt=True,
+        ).to(model.device)
+
+        # Generate
+        with torch.inference_mode():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=4096,
+                do_sample=False,
+            )
+
+        # Decode only the generated tokens (skip the input)
+        input_len = inputs["input_ids"].shape[-1]
+        generated_ids = output_ids[:, input_len:]
+        text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
         return [text]  # Single combined output for all pages
 
     except Exception as e:
@@ -204,7 +214,7 @@ def process_pdf(pdf_bytes):
 
     all_transactions = []
     
-    # Process in batches — Qwen3-VL handles multi-image natively
+    # Process in batches — Gemma 4 handles multi-image natively
     for i in range(0, len(images), MAX_PAGES_PER_BATCH):
         batch = images[i:i + MAX_PAGES_PER_BATCH]
         batch_num = i // MAX_PAGES_PER_BATCH + 1
