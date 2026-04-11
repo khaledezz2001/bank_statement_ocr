@@ -3,29 +3,37 @@ import json
 import base64
 import re
 import os
-import io
+import torch
 from datetime import datetime
 from pdf2image import convert_from_bytes
 from PIL import Image
-from openai import OpenAI
+from transformers import AutoProcessor, AutoModelForImageTextToText
 
 def log(msg):
     print(f"[LOG] {msg}", flush=True)
 
 # ===============================
-# CONFIG & vLLM CLIENT
+# CONFIG & MODEL LOADING
 # ===============================
-MODEL_ID = "meta-llama/Llama-4-Scout-17B-16E-Instruct"
-VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
+MODEL_PATH = "/models/gemma4"
 MAX_PAGES_PER_BATCH = 4  # Number of pages to process in a single prompt (multi-image)
 
-log(f"Connecting to vLLM server at {VLLM_BASE_URL}")
-log(f"Model: {MODEL_ID}")
+log("Loading Gemma-4-26B-A4B-it with Transformers...")
 
-client = OpenAI(
-    api_key="EMPTY",  # vLLM doesn't require a real API key
-    base_url=VLLM_BASE_URL,
-)
+processor = AutoProcessor.from_pretrained(MODEL_PATH)
+
+try:
+    model = AutoModelForImageTextToText.from_pretrained(
+        MODEL_PATH,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    model.eval()
+    log("Gemma-4-26B-A4B-it loaded successfully with Transformers.")
+except Exception as e:
+    log(f"CRITICAL ERROR loading model: {str(e)}")
+    raise e
 
 # ===============================
 # PROMPT
@@ -74,15 +82,6 @@ Rules:
 8. Output ONLY these 6 fields per transaction: date, description, debit, credit, balance, currency. Do NOT include any other fields.
 """
 
-def image_to_base64(img):
-    """Convert a PIL Image to a base64-encoded JPEG string."""
-    if max(img.size) > 2000:
-        img.thumbnail((2000, 2000))
-    buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=90)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-
 def repair_truncated_json(text):
     """Attempt to repair truncated JSON arrays by finding the last complete object."""
     start = text.find('[')
@@ -109,37 +108,53 @@ def repair_truncated_json(text):
 
 def process_pages(images):
     """
-    Process multiple pages using Llama 4 Scout's native multi-image support
-    via vLLM's OpenAI-compatible API.
+    Process multiple pages using Gemma 4's native multi-image support
+    with Hugging Face Transformers.
     """
-    # Build the content list with images + text prompt
+    # Resize images for consistency
+    processed_images = []
+    for img in images:
+        if max(img.size) > 2000:
+            img.thumbnail((2000, 2000))
+        processed_images.append(img)
+
+    # Build multi-image prompt
     content = []
-    for idx, img in enumerate(images):
-        b64 = image_to_base64(img)
-        content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/jpeg;base64,{b64}"
-            }
-        })
+    for idx, img in enumerate(processed_images):
+        content.append({"type": "image", "image": img})
     content.append({"type": "text", "text": SYSTEM_PROMPT})
 
+    messages = [
+        {"role": "user", "content": content}
+    ]
+
     try:
-        response = client.chat.completions.create(
-            model=MODEL_ID,
-            messages=[
-                {"role": "user", "content": content}
-            ],
-            max_tokens=4096,
-            temperature=0.0,
-        )
-        
-        text = response.choices[0].message.content
-        log(f"vLLM response received. Length: {len(text)} chars.")
-        return [text]
+        # Apply chat template and process inputs
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+            add_generation_prompt=True,
+        ).to(model.device)
+
+        # Generate
+        with torch.inference_mode():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=4096,
+                do_sample=False,
+            )
+
+        # Decode only the generated tokens (skip the input)
+        input_len = inputs["input_ids"].shape[-1]
+        generated_ids = output_ids[:, input_len:]
+        text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+        return [text]  # Single combined output for all pages
 
     except Exception as e:
-        log(f"vLLM inference error: {e}")
+        log(f"Inference error: {e}")
         return [json.dumps({"error": f"Batch failed: {str(e)}"})]
 
 
@@ -199,7 +214,7 @@ def process_pdf(pdf_bytes):
 
     all_transactions = []
     
-    # Process in batches — Llama 4 Scout handles multi-image natively
+    # Process in batches — Gemma 4 handles multi-image natively
     for i in range(0, len(images), MAX_PAGES_PER_BATCH):
         batch = images[i:i + MAX_PAGES_PER_BATCH]
         batch_num = i // MAX_PAGES_PER_BATCH + 1
@@ -294,12 +309,14 @@ def handler(event):
     job_input = event["input"]
     log(f"Input keys: {job_input.keys() if isinstance(job_input, dict) else type(job_input)}")
     
-    if "pdf_base64" not in job_input:
-        log("ERROR: Missing 'pdf_base64' in input")
-        return {"error": "Missing pdf_base64 field"}
+    # Accept either 'pdf_base64' or 'file' as the input key
+    pdf_b64 = job_input.get("pdf_base64") or job_input.get("file")
+    
+    if not pdf_b64:
+        log("ERROR: Missing 'pdf_base64' or 'file' in input")
+        return {"error": "Missing pdf_base64 or file field"}
 
-    pdf_b64 = job_input["pdf_base64"]
-    log(f"Received pdf_base64 of length: {len(pdf_b64)}")
+    log(f"Received PDF data of length: {len(pdf_b64)}")
     
     try:
         pdf_bytes = base64.b64decode(pdf_b64)
@@ -320,16 +337,11 @@ def handler(event):
         return {"error": f"Processing failed: {str(e)}"}
 
 if __name__ == "__main__":
-    log("Bank Statement OCR Handler starting...")
-    log(f"Model: {MODEL_ID}")
-    log(f"vLLM endpoint: {VLLM_BASE_URL}")
-    
-    # Check if vLLM server is reachable
-    try:
-        models = client.models.list()
-        log(f"vLLM server is ready. Available models: {[m.id for m in models.data]}")
-    except Exception as e:
-        log(f"WARNING: Cannot reach vLLM server at {VLLM_BASE_URL}: {e}")
-        log("The server may still be starting up. Proceeding anyway...")
-    
+    # Log GPU status at startup
+    log(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        log(f"GPU: {torch.cuda.get_device_name(0)}")
+        log(f"GPU memory: {torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB")
+    else:
+        log("WARNING: CUDA is NOT available! Model will run on CPU (very slow).")
     runpod.serverless.start({"handler": handler})
