@@ -25,9 +25,10 @@ processor = AutoProcessor.from_pretrained(MODEL_PATH)
 try:
     model = AutoModelForMultimodalLM.from_pretrained(
         MODEL_PATH,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
+        experts_implementation="batched_mm",  # A100 (SM80) doesn't support grouped_mm (requires SM90/H100)
     )
     model.eval()
     log("Gemma-4-26B-A4B-it loaded successfully with Transformers.")
