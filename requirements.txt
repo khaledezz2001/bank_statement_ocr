@@ -12,3 +12,4 @@ huggingface_hub
 # =========================
 transformers==5.5.0
 accelerate
+torchvision
