@@ -7,7 +7,7 @@ import torch
 from datetime import datetime
 from pdf2image import convert_from_bytes
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForImageTextToText
+from transformers import AutoProcessor, AutoModelForMultimodalLM
 
 def log(msg):
     print(f"[LOG] {msg}", flush=True)
@@ -23,7 +23,7 @@ log("Loading Gemma-4-26B-A4B-it with Transformers...")
 processor = AutoProcessor.from_pretrained(MODEL_PATH)
 
 try:
-    model = AutoModelForImageTextToText.from_pretrained(
+    model = AutoModelForMultimodalLM.from_pretrained(
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
         device_map="auto",
@@ -109,7 +109,7 @@ def repair_truncated_json(text):
 def process_pages(images):
     """
     Process multiple pages using Gemma 4's native multi-image support
-    with Hugging Face Transformers.
+    with Hugging Face Transformers (official API from model card).
     """
     # Resize images for consistency
     processed_images = []
@@ -118,10 +118,12 @@ def process_pages(images):
             img.thumbnail((2000, 2000))
         processed_images.append(img)
 
-    # Build multi-image prompt
+    # Build multi-image prompt — use image placeholders in content,
+    # then pass the actual PIL images separately to the processor.
     content = []
-    for idx, img in enumerate(processed_images):
-        content.append({"type": "image", "image": img})
+    for idx in range(len(processed_images)):
+        # Each image placeholder tells the template where to insert an image token
+        content.append({"type": "image"})
     content.append({"type": "text", "text": SYSTEM_PROMPT})
 
     messages = [
@@ -129,16 +131,24 @@ def process_pages(images):
     ]
 
     try:
-        # Apply chat template and process inputs
-        inputs = processor.apply_chat_template(
+        # Step 1: Apply chat template to get the formatted text prompt
+        text = processor.apply_chat_template(
             messages,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
+            tokenize=False,
             add_generation_prompt=True,
+            enable_thinking=False,
+        )
+
+        # Step 2: Process text + images together into model inputs
+        inputs = processor(
+            text=text,
+            images=processed_images,
+            return_tensors="pt",
         ).to(model.device)
 
-        # Generate
+        input_len = inputs["input_ids"].shape[-1]
+
+        # Step 3: Generate
         with torch.inference_mode():
             output_ids = model.generate(
                 **inputs,
@@ -146,15 +156,17 @@ def process_pages(images):
                 do_sample=False,
             )
 
-        # Decode only the generated tokens (skip the input)
-        input_len = inputs["input_ids"].shape[-1]
+        # Step 4: Decode only the generated tokens (skip the input)
         generated_ids = output_ids[:, input_len:]
-        text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        raw_response = processor.decode(generated_ids[0], skip_special_tokens=True)
 
-        return [text]  # Single combined output for all pages
+        log(f"Raw model output (first 500 chars): {raw_response[:500]}")
+        return [raw_response]
 
     except Exception as e:
         log(f"Inference error: {e}")
+        import traceback
+        log(f"Traceback: {traceback.format_exc()}")
         return [json.dumps({"error": f"Batch failed: {str(e)}"})]
 
 
