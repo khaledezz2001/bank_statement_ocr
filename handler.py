@@ -3,6 +3,7 @@ import json
 import base64
 import re
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
 from datetime import datetime
 from pdf2image import convert_from_bytes
@@ -23,12 +24,17 @@ log("Loading Gemma-4-26B-A4B-it with Transformers...")
 processor = AutoProcessor.from_pretrained(MODEL_PATH)
 
 try:
+    # Auto-detect best experts implementation based on compute capability (H100=90, A100=80)
+    # batched_mm duplicates weights per token and causes CUDA OOM with large image inputs.
+    capability = torch.cuda.get_device_capability()[0] if torch.cuda.is_available() else 8
+    experts_impl = "grouped_mm" if capability >= 9 else "eager"
+
     model = AutoModelForMultimodalLM.from_pretrained(
         MODEL_PATH,
         dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
-        experts_implementation="batched_mm",  # A100 (SM80) doesn't support grouped_mm (requires SM90/H100)
+        experts_implementation=experts_impl,
     )
     model.eval()
     log("Gemma-4-26B-A4B-it loaded successfully with Transformers.")
