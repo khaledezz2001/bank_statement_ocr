@@ -18,6 +18,7 @@ def log(msg):
 # ===============================
 MODEL_PATH = "/models/gemma4"
 MAX_PAGES_PER_BATCH = 4  # Number of pages to process in a single prompt (multi-image)
+MAX_NEW_TOKENS = 65536  # Large enough for 50+ transactions per page
 
 log("Loading Gemma-4-26B-A4B-it with Transformers...")
 
@@ -163,7 +164,7 @@ def process_pages(images):
         with torch.inference_mode():
             output_ids = model.generate(
                 **inputs,
-                max_new_tokens=16384,
+                max_new_tokens=MAX_NEW_TOKENS,
                 do_sample=False,
             )
 
@@ -182,7 +183,12 @@ def process_pages(images):
 
 
 def parse_raw_output(raw_output, batch_idx):
-    """Parse raw model output into transaction list."""
+    """Parse raw model output into transaction list.
+    
+    Returns:
+        tuple: (transactions_list, was_truncated)
+    """
+    was_truncated = False
     try:
         cleaned = raw_output
 
@@ -206,10 +212,12 @@ def parse_raw_output(raw_output, batch_idx):
             if batch_data is None:
                 log("Direct parse failed. Attempting truncated JSON repair...")
                 batch_data = repair_truncated_json(cleaned)
+                if batch_data is not None:
+                    was_truncated = True
 
         if batch_data is not None and isinstance(batch_data, list):
             log(f"Batch {batch_idx} parsed successfully: {len(batch_data)} transactions.")
-            return batch_data
+            return batch_data, was_truncated
         elif batch_data is not None:
             log(f"Warning: Batch {batch_idx} returned non-list JSON: {batch_data}")
         else:
@@ -220,7 +228,7 @@ def parse_raw_output(raw_output, batch_idx):
         log(f"Failed to parse JSON for batch {batch_idx}: {e}. Skipping.")
         log(f"Raw output (first 500 chars): {raw_output[:500]}")
     
-    return []
+    return [], was_truncated
 
 
 def process_pdf(pdf_bytes):
@@ -248,19 +256,43 @@ def process_pdf(pdf_bytes):
         raw_outputs = process_pages(batch)
         
         # Parse the combined output
+        batch_truncated = False
         for j, raw_output in enumerate(raw_outputs):
-            batch_transactions = parse_raw_output(raw_output, batch_num)
+            batch_transactions, was_truncated = parse_raw_output(raw_output, batch_num)
+            if was_truncated:
+                batch_truncated = True
             all_transactions.extend(batch_transactions)
+        
+        # If output was truncated and batch had multiple pages, retry each page individually
+        if batch_truncated and len(batch) > 1:
+            log(f"Batch {batch_num} was truncated with {len(batch)} pages. Retrying each page individually...")
+            all_transactions = all_transactions[:-len(batch_transactions)]  # remove partial results
+            for page_idx, single_page in enumerate(batch):
+                log(f"  Re-processing page {i + page_idx + 1} individually...")
+                page_outputs = process_pages([single_page])
+                for raw_output in page_outputs:
+                    page_txns, _ = parse_raw_output(raw_output, f"{batch_num}-page{page_idx+1}")
+                    all_transactions.extend(page_txns)
             
-    # Filter out ghost transactions (balance=0, credit=null, debit=null)
+    # Filter out ghost transactions — only remove truly empty records
     final_transactions = []
     for t in all_transactions:
         balance = t.get("balance")
         credit = t.get("credit")
         debit = t.get("debit")
+        description = t.get("description", "").strip()
         
-        # Check if it's a ghost record
-        if ((balance == 0 or balance == 0.0) and credit is None and debit is None) or (credit is None and debit is None) or (credit == 0 and debit == 0):
+        # Only remove if ALL value fields are empty/zero AND no meaningful description
+        is_completely_empty = (
+            (balance is None or balance == 0 or balance == 0.0)
+            and credit is None
+            and debit is None
+        )
+        # Also remove if both debit and credit are explicitly zero
+        both_zero = (credit == 0 and debit == 0)
+        
+        if (is_completely_empty and not description) or both_zero:
+            log(f"Filtered ghost transaction: {t}")
             continue
         
         # Keep only the 6 required fields
