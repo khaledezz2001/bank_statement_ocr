@@ -90,6 +90,30 @@ Rules:
 8. Output ONLY these 6 fields per transaction: date, description, debit, credit, balance, currency. Do NOT include any other fields.
 """
 
+def fix_european_numbers(text):
+    """Convert European number format (dot=thousands, comma=decimal) to standard JSON numbers.
+    
+    The model sometimes outputs numbers like 8.658,25 (European style) instead of 8658.25.
+    This is invalid JSON and breaks parsing.
+    
+    Pattern targets: digits with dot+3digit groups followed by comma+digits
+    Examples:
+        8.658,25   → 8658.25
+        230.000,00 → 230000.00
+        276.361,88 → 276361.88
+    
+    Safe: won't match normal decimals like 300.00 or 40.00 (no comma+digits after).
+    """
+    def replace_match(m):
+        s = m.group(0)
+        s = s.replace('.', '')   # remove thousands separator dots
+        s = s.replace(',', '.')  # decimal comma → dot
+        return s
+    
+    # Match: 1-3 digits, then one or more (.ddd) groups, then ,digits
+    return re.sub(r'\d{1,3}(?:\.\d{3})+,\d+', replace_match, text)
+
+
 def repair_truncated_json(text):
     """Attempt to repair truncated JSON arrays by finding the last complete object.
     
@@ -213,6 +237,12 @@ def parse_raw_output(raw_output, batch_idx):
 
         # Strip markdown code fences
         cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+
+        # Fix European number formatting (e.g. 8.658,25 → 8658.25) before JSON parse
+        cleaned_fixed = fix_european_numbers(cleaned)
+        if cleaned_fixed != cleaned:
+            log("Fixed European number formatting in model output.")
+            cleaned = cleaned_fixed
 
         # Try direct JSON parse first
         batch_data = None
