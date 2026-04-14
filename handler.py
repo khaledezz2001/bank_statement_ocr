@@ -159,20 +159,39 @@ def process_pages(images):
         ).to(model.device)
 
         input_len = inputs["input_ids"].shape[-1]
+        log(f"Input token count: {input_len}")
 
-        # Step 3: Generate
+        # Log the model's default generation config to detect hidden limits
+        gen_config = model.generation_config
+        log(f"Model generation_config: max_length={getattr(gen_config, 'max_length', 'N/A')}, "
+            f"max_new_tokens={getattr(gen_config, 'max_new_tokens', 'N/A')}, "
+            f"eos_token_id={getattr(gen_config, 'eos_token_id', 'N/A')}")
+
+        # Step 3: Generate — explicitly set max_length high to prevent it
+        # from overriding max_new_tokens (max_length = input + output tokens)
         with torch.inference_mode():
             output_ids = model.generate(
                 **inputs,
                 max_new_tokens=MAX_NEW_TOKENS,
+                max_length=input_len + MAX_NEW_TOKENS,
                 do_sample=False,
             )
 
         # Step 4: Decode only the generated tokens (skip the input)
         generated_ids = output_ids[:, input_len:]
+        num_generated = generated_ids.shape[-1]
         raw_response = processor.decode(generated_ids[0], skip_special_tokens=True)
 
-        log(f"Raw model output (first 500 chars): {raw_response[:500]}")
+        # Check if generation stopped at EOS or hit token limit
+        eos_id = getattr(gen_config, 'eos_token_id', None)
+        last_token = generated_ids[0, -1].item() if num_generated > 0 else None
+        stopped_at_eos = (last_token == eos_id) if (eos_id is not None and last_token is not None) else "unknown"
+        
+        log(f"Generated {num_generated} tokens (stopped_at_eos={stopped_at_eos}, last_token_id={last_token})")
+        log(f"Raw output length: {len(raw_response)} chars")
+        log(f"=== FULL RAW MODEL OUTPUT START ===")
+        log(raw_response)
+        log(f"=== FULL RAW MODEL OUTPUT END ===")
         return [raw_response]
 
     except Exception as e:
