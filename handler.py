@@ -90,25 +90,29 @@ Rules:
 """
 
 def repair_truncated_json(text):
-    """Attempt to repair truncated JSON arrays by finding the last complete object."""
+    """Attempt to repair truncated JSON arrays by finding the last complete object.
+    
+    Strategy: walk backwards through all '}' positions to find the last
+    closing brace that, when followed by ']', yields a valid JSON array.
+    This handles cases where the truncation happens mid-object.
+    """
     start = text.find('[')
     if start == -1:
         return None
     
-    last_brace = text.rfind('}')
-    if last_brace == -1:
-        return None
+    # Find all '}' positions and try each from the end
+    body = text[start:]
+    positions = [i for i, ch in enumerate(body) if ch == '}']
     
-    truncated = text[start:last_brace + 1].rstrip().rstrip(',')
-    repaired = truncated + '\n]'
-    
-    try:
-        data = json.loads(repaired)
-        if isinstance(data, list):
-            log(f"Repaired truncated JSON: recovered {len(data)} transactions.")
-            return data
-    except json.JSONDecodeError:
-        pass
+    for pos in reversed(positions):
+        candidate = body[:pos + 1].rstrip().rstrip(',') + '\n]'
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, list) and len(data) > 0:
+                log(f"Repaired truncated JSON: recovered {len(data)} transactions.")
+                return data
+        except json.JSONDecodeError:
+            continue
     
     return None
 
@@ -159,7 +163,7 @@ def process_pages(images):
         with torch.inference_mode():
             output_ids = model.generate(
                 **inputs,
-                max_new_tokens=4096,
+                max_new_tokens=16384,
                 do_sample=False,
             )
 
