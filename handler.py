@@ -50,6 +50,21 @@ SYSTEM_PROMPT = """You are a helpful financial assistant.
 Your task is to extract all transaction details from the provided bank statement images.
 Return ONLY a valid JSON array of objects. Do not include any markdown formatting (like ```json).
 
+CRITICAL — Number formatting:
+- ALL numeric values (debit, credit, balance) MUST be plain decimal numbers using a DOT as the decimal separator.
+- NEVER use dots or commas as thousands separators.
+- NEVER use a comma as a decimal separator.
+- Convert any European-style numbers you see in the statement to standard format:
+    18.812,76  →  18812.76
+    3.884,81   →  3884.81
+    300.000,00 →  300000.00
+    276.361,88 →  276361.88
+    3,25       →  3.25
+    150,00     →  150.00
+    8.658,25   →  8658.25
+- If the value is a whole number, write it as an integer (e.g. 200, not 200.00).
+- Numbers in JSON must NOT be quoted — they are raw numeric values.
+
 Output Format Examples:
 
 Example 1 (separate Debits/Credits columns):
@@ -79,7 +94,7 @@ Example 2 (single Amount column with negative values):
 Rules:
 1. Extract every single transaction row.
 2. If a value is missing, use null.
-3. Ensure numbers are floats (no currency symbols or thousand separators). Use absolute values (always positive).
+3. Ensure numbers are plain decimal floats using DOT as decimal separator. No currency symbols, no thousand separators (no dots or commas for grouping). Use absolute values (always positive).
 4. Date format: ALWAYS output dates as YYYY-MM-DD. IMPORTANT: Bank statements almost always use DD/MM/YYYY format (day first, then month). For example, 02/06/2025 means June 2nd 2025 (2025-06-02), NOT February 6th. Even if both day and month values are 12 or below, assume DD/MM/YYYY. Use the statement's date range header and the description context (e.g. "Fees For May" posted in June) to confirm.
 5. CAREFULLY check the column headers to determine whether an amount is a debit or credit:
    - If there are separate "Debits" and "Credits" columns, look at which column the number appears under.
@@ -90,28 +105,6 @@ Rules:
 8. Output ONLY these 6 fields per transaction: date, description, debit, credit, balance, currency. Do NOT include any other fields.
 """
 
-def fix_european_numbers(text):
-    """Convert European number format (dot=thousands, comma=decimal) to standard JSON numbers.
-    
-    The model sometimes outputs numbers like 8.658,25 (European style) instead of 8658.25.
-    This is invalid JSON and breaks parsing.
-    
-    Pattern targets: digits with dot+3digit groups followed by comma+digits
-    Examples:
-        8.658,25   → 8658.25
-        230.000,00 → 230000.00
-        276.361,88 → 276361.88
-    
-    Safe: won't match normal decimals like 300.00 or 40.00 (no comma+digits after).
-    """
-    def replace_match(m):
-        s = m.group(0)
-        s = s.replace('.', '')   # remove thousands separator dots
-        s = s.replace(',', '.')  # decimal comma → dot
-        return s
-    
-    # Match: 1-3 digits, then one or more (.ddd) groups, then ,digits
-    return re.sub(r'\d{1,3}(?:\.\d{3})+,\d+', replace_match, text)
 
 
 def repair_truncated_json(text):
@@ -237,12 +230,6 @@ def parse_raw_output(raw_output, batch_idx):
 
         # Strip markdown code fences
         cleaned = cleaned.replace("```json", "").replace("```", "").strip()
-
-        # Fix European number formatting (e.g. 8.658,25 → 8658.25) before JSON parse
-        cleaned_fixed = fix_european_numbers(cleaned)
-        if cleaned_fixed != cleaned:
-            log("Fixed European number formatting in model output.")
-            cleaned = cleaned_fixed
 
         # Try direct JSON parse first
         batch_data = None
