@@ -95,7 +95,21 @@ Rules:
 1. Extract every single transaction row.
 2. If a value is missing, use null.
 3. Ensure numbers are plain decimal floats using DOT as decimal separator. No currency symbols, no thousand separators (no dots or commas for grouping). Use absolute values (always positive).
-4. Date format: ALWAYS output dates as YYYY-MM-DD. IMPORTANT: Bank statements almost always use DD/MM/YYYY format (day first, then month). For example, 02/06/2025 means June 2nd 2025 (2025-06-02), NOT February 6th. Even if both day and month values are 12 or below, assume DD/MM/YYYY. Use the statement's date range header and the description context (e.g. "Fees For May" posted in June) to confirm.
+4. CRITICAL DATE RULES — output dates as YYYY-MM-DD:
+   a. First, determine the date format used in the statement by examining:
+      - The statement header / period line (e.g. "01.01.2025 to 31.12.2025" or "01/01/2025 - 12/31/2025")
+      - The language and country of the bank (European/Middle-Eastern banks use DD.MM.YYYY or DD/MM/YYYY; US banks use MM/DD/YYYY)
+      - Whether any date in the column has a day value > 12, which proves it is DD-first format
+   b. Common formats and how to convert them:
+      - DD.MM.YYYY or DD/MM/YYYY → 18.02.2025 means Day=18, Month=02, output 2025-02-18
+      - MM/DD/YYYY → 02/18/2025 means Month=02, Day=18, output 2025-02-18
+      - DD MMM YYYY or DD-Mon-YYYY → 18 Feb 2025 or 18-Feb-2025, output 2025-02-18
+      - MMM DD, YYYY → Feb 18, 2025, output 2025-02-18
+      - YYYY-MM-DD → already in correct format, output as-is
+   c. When the format uses dots (.) or slashes (/) and ALL values are ≤ 12, default to DD first (day.month.year) unless the bank is clearly US-based.
+   d. Read each date digit by digit from the image very carefully. Do not guess or approximate dates.
+   e. Use the statement period header to verify that all transaction dates fall within the expected range.
+   f. Examples: 18.02.2025 → 2025-02-18 | 24.02.2025 → 2025-02-24 | 26.06.2025 → 2025-06-26 | 02/18/2025 → 2025-02-18 | Jan 5, 2025 → 2025-01-05
 5. CAREFULLY check the column headers to determine whether an amount is a debit or credit:
    - If there are separate "Debits" and "Credits" columns, look at which column the number appears under.
    - If there is a single "Amount" column, negative values (with a minus sign) are DEBITS and positive values are CREDITS.
@@ -342,7 +356,8 @@ def process_pdf(pdf_bytes):
         }
         final_transactions.append(cleaned_t)
     
-    # ---- Post-processing: normalize dates (fix DD/MM vs MM/DD ambiguity) ----
+    # ---- Post-processing: normalize dates ----
+    # Step 1: Fix obviously swapped dates (month > 12)
     for t in final_transactions:
         date_str = t.get("date", "")
         if date_str:
@@ -355,6 +370,64 @@ def process_pdf(pdf_bytes):
                         t["date"] = f"{year}-{day:02d}-{month:02d}"
             except (ValueError, IndexError):
                 pass
+    
+    # Step 2: Detect the statement's actual date range from the data itself.
+    # Collect all valid (year, month) pairs and find the dominant range.
+    # Then check if swapping day/month on each date would place it better
+    # within the dominant range — this catches subtle misreads where both
+    # day and month are <= 12.
+    from collections import Counter
+    valid_months = []
+    for t in final_transactions:
+        date_str = t.get("date", "")
+        if date_str:
+            try:
+                parts = date_str.split("-")
+                if len(parts) == 3:
+                    y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                    if 1 <= m <= 12 and 1 <= d <= 31:
+                        valid_months.append(m)
+            except (ValueError, IndexError):
+                pass
+    
+    if valid_months:
+        month_counts = Counter(valid_months)
+        # The most common months represent the real date range
+        common_months = {m for m, cnt in month_counts.items() if cnt >= 2}
+        
+        # Step 3: For dates where month appears only once (singleton month),
+        # check if swapping day↔month would produce a month that's in common_months.
+        # This fixes cases like 2025-01-18 that should be 2025-02-18 (misread from 18.02).
+        for t in final_transactions:
+            date_str = t.get("date", "")
+            if not date_str:
+                continue
+            try:
+                parts = date_str.split("-")
+                if len(parts) != 3:
+                    continue
+                y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                
+                # Only attempt swap if current month is a singleton AND
+                # the swapped version would be valid and in the common set
+                if (month_counts.get(m, 0) <= 1 and   # current month is rare
+                    d <= 12 and m <= 31 and             # swap would be valid
+                    d in common_months and              # swapped month is common
+                    d != m):                            # not the same value
+                    
+                    new_date = f"{y}-{d:02d}-{m:02d}"
+                    log(f"Fixing likely misread date: {date_str} -> {new_date} "
+                        f"(month {m} is rare, month {d} is common in this statement)")
+                    t["date"] = new_date
+            except (ValueError, IndexError):
+                pass
+    
+    # Step 4: Log singleton dates for debugging awareness
+    date_counts = Counter(t.get("date", "") for t in final_transactions if t.get("date"))
+    for t in final_transactions:
+        d = t.get("date", "")
+        if d and date_counts[d] == 1:
+            log(f"Singleton date detected (possible misread): {d} — {t.get('description', '')[:60]}")
     
     # ---- Post-processing: sort by date (chronological) for balance validation ----
     try:
